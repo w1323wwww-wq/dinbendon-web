@@ -104,19 +104,26 @@ export function matchHistory(history, rows) {
   return (history || []).map(h => ({ ...h, row: byName.get(`${h.product}|${h.variation}`) })).filter(h => h.row);
 }
 
-// ----- 給早餐店: one order's items merged by product + note -----
+// ----- 給早餐店: one order's items merged by product + note, with who ordered -----
 // items: expand-for-buyer items. Same product with different notes stays on separate lines.
-export function shopOrderText(items, { title = '', withNames = false } = {}) {
+export function shopOrderLines(items) {
   const lines = new Map();
   let total = 0;
   for (const it of items) {
     const k = `${it.productFullName}|${it.comment || ''}`;
-    const l = lines.get(k) || { name: it.productFullName, note: it.comment || '', qty: 0, buyers: [] };
-    l.qty++; l.buyers.push(it.buyerName);
+    const l = lines.get(k) || { name: it.productFullName, note: it.comment || '', qty: 0, buyers: new Map() };
+    l.qty++; l.buyers.set(it.buyerName, (l.buyers.get(it.buyerName) || 0) + 1);
     lines.set(k, l);
     total += it.calculatedPrice ?? it.price ?? 0;
   }
-  const body = [...lines.values()].map((l, i) =>
-    `${i + 1}. ${l.name} ×${l.qty}${l.note ? `（${l.note}）` : ''}${withNames ? `　${[...new Set(l.buyers)].join('、')}` : ''}`);
-  return [title, ...body, `共 ${items.length} 份，$${total}`].filter(Boolean).join('\n');
+  return {
+    lines: [...lines.values()].map(l => ({ ...l, who: [...l.buyers].map(([n, q]) => (q > 1 ? `${n}×${q}` : n)).join('、') })),
+    count: items.length, total,
+  };
+}
+
+export function shopOrderText(items, title = '') {
+  const { lines, count, total } = shopOrderLines(items);
+  const body = lines.map((l, i) => `${i + 1}. ${l.name} ×${l.qty}${l.note ? `（${l.note}）` : ''}　${l.who}`);
+  return [title, ...body, `共 ${count} 份，$${total}`].filter(Boolean).join('\n');
 }

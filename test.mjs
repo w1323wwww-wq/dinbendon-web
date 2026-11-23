@@ -1,7 +1,7 @@
 // Run: node test.mjs
 import assert from 'node:assert/strict';
 import { weekRange, summarize, formatSettlement, chunk } from './worker/settle.js';
-import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory, shopOrderText } from './lib.js';
+import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory, shopOrderText, shopOrderLines } from './lib.js';
 
 // Shape recorded from dinbendon /order/{id}/get-add-item
 const data = {
@@ -80,7 +80,9 @@ const shopItems = [
   { buyerName: 'Mao', productFullName: '日式豬排蛋(漢堡)', comment: null, price: 100 },
   { buyerName: 'Bob', productFullName: '紅茶(M冰)', comment: null, price: 20, calculatedPrice: 15 },
 ];
-assert.equal(shopOrderText(shopItems, { title: '週三早餐' }), '週三早餐\n1. 紅茶(M冰) ×1（微糖）\n2. 日式豬排蛋(漢堡) ×2\n3. 紅茶(M冰) ×1\n共 4 份，$235');
-assert.match(shopOrderText(shopItems, { withNames: true }), /日式豬排蛋\(漢堡\) ×2　ian、Mao/);
+assert.equal(shopOrderText(shopItems, '週三早餐'), '週三早餐\n1. 紅茶(M冰) ×1（微糖）　Mao\n2. 日式豬排蛋(漢堡) ×2　ian、Mao\n3. 紅茶(M冰) ×1　Bob\n共 4 份，$235');
+const two = shopOrderLines([...shopItems, { buyerName: 'Mao', productFullName: '紅茶(M冰)', comment: '微糖', price: 20 }]);
+assert.equal(two.lines[0].who, 'Mao×2');
+assert.equal(two.count, 5);
 
 console.log('ok');

@@ -2,7 +2,7 @@
 // reload always picks up a new deploy (GitHub Pages caches files for 10 minutes).
 const v = new URL(import.meta.url).search;
 const { WORKER_URL } = await import(`./config.js${v}`);
-const { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory, shopOrderText } = await import(`./lib.js${v}`);
+const { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory, shopOrderText, shopOrderLines } = await import(`./lib.js${v}`);
 
 let $app = document.getElementById('app');
 const $nav = document.getElementById('nav');
@@ -111,6 +111,57 @@ function renderSetup() {
 }
 
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
+
+// Receipt-style PNG of an order for the breakfast shop (pasted into LINE).
+async function drawShopImage(shopName, orderName, { lines, count, total }) {
+  await document.fonts.ready;
+  const W = 720, P = 32, S = 2, F = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+  const c = document.createElement('canvas'), ctx = c.getContext('2d');
+  const font = (w, px) => `${w} ${px}px ${F}`;
+  const wrap = (text, maxW, f) => {
+    ctx.font = f; const out = []; let cur = '';
+    for (const ch of text) { if (cur && ctx.measureText(cur + ch).width > maxW) { out.push(cur); cur = ch; } else cur += ch; }
+    if (cur) out.push(cur); return out;
+  };
+  const t = new Date(Date.now() + 8 * 3600e3);
+  const date = `${t.getUTCFullYear()}/${t.getUTCMonth() + 1}/${t.getUTCDate()}（${WD[t.getUTCDay()]}）`;
+  // layout pass
+  const HEAD = 132, textW = W - P * 2 - 56 - 90;
+  const rows = lines.map(l => {
+    const name = wrap(l.name, textW, font(700, 26)), note = l.note ? wrap(`備註：${l.note}`, textW, font(500, 20)) : [], who = wrap(l.who, textW, font(400, 20));
+    return { l, name, note, who, h: 22 + name.length * 34 + note.length * 28 + who.length * 28 + 18 };
+  });
+  const H = HEAD + rows.reduce((s, r) => s + r.h, 0) + 96;
+  c.width = W * S; c.height = H * S; ctx.scale(S, S);
+  // background + header band
+  ctx.fillStyle = '#fffaf3'; ctx.fillRect(0, 0, W, H);
+  const g = ctx.createLinearGradient(0, 0, W, HEAD); g.addColorStop(0, '#e2531f'); g.addColorStop(1, '#f59e0b');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, HEAD);
+  ctx.fillStyle = '#fff'; ctx.textBaseline = 'top';
+  ctx.font = font(900, 34); ctx.fillText(shopName, P, 26);
+  ctx.font = font(500, 22); ctx.fillText(`${orderName}　${date}`, P, 76);
+  ctx.textAlign = 'right'; ctx.font = font(900, 40); ctx.fillText(`${count} 份`, W - P, 40); ctx.textAlign = 'left';
+  // rows
+  let y = HEAD;
+  rows.forEach((r, i) => {
+    if (i % 2) { ctx.fillStyle = '#fbefe2'; ctx.fillRect(0, y, W, r.h); }
+    let ty = y + 22;
+    ctx.fillStyle = '#e2531f'; ctx.beginPath(); ctx.arc(P + 18, ty + 17, 18, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = font(700, 18); ctx.textAlign = 'center'; ctx.fillText(String(i + 1), P + 18, ty + 6); ctx.textAlign = 'left';
+    const x = P + 56;
+    ctx.fillStyle = '#2a211a'; ctx.font = font(700, 26); for (const s of r.name) { ctx.fillText(s, x, ty); ty += 34; }
+    ctx.fillStyle = '#c2410c'; ctx.font = font(500, 20); for (const s of r.note) { ctx.fillText(s, x, ty); ty += 28; }
+    ctx.fillStyle = '#8a7b6c'; ctx.font = font(400, 20); for (const s of r.who) { ctx.fillText(s, x, ty); ty += 28; }
+    ctx.fillStyle = '#e2531f'; ctx.font = font(900, 34); ctx.textAlign = 'right'; ctx.fillText(`×${r.l.qty}`, W - P, y + 22); ctx.textAlign = 'left';
+    y += r.h;
+  });
+  // footer
+  ctx.strokeStyle = '#eadbc8'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+  ctx.beginPath(); ctx.moveTo(P, y + 18); ctx.lineTo(W - P, y + 18); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#2a211a'; ctx.font = font(700, 26); ctx.fillText(`共 ${count} 份`, P, y + 40);
+  ctx.textAlign = 'right'; ctx.fillStyle = '#e2531f'; ctx.font = font(900, 30); ctx.fillText(`$${total}`, W - P, y + 38); ctx.textAlign = 'left';
+  return c;
+}
 function dateBadge(ms) {
   if (ms == null) return `<div class="date"><b>∞</b><span>隨時</span></div>`;
   const t = new Date(ms + 8 * 3600e3);
@@ -223,7 +274,7 @@ async function renderOrder(orderId) {
     <h2>大家點的</h2><div class="card" id="all">${allHtml(expanded.items)}</div>
     ${open ? '' : '<p class="muted">這張單已截止，不能再訂或取消。</p>'}
     <div ${open ? '' : 'hidden'}>
-    <div id="againbox" ${again().length ? '' : 'hidden'}><h2>再買一次</h2><div class="variants" id="again">${againHtml()}</div></div>
+    <div id="againbox" ${again().length ? '' : 'hidden'}><div class="row"><h2 class="grow">再買一次</h2><button id="clearagain" class="link">全部清除</button></div><div class="variants" id="again">${againHtml()}</div></div>
     <h2>菜單</h2>
     <input id="q" placeholder="搜尋品項…" style="width:100%">
     <div class="chips" id="chips"><button data-cat="" class="on">全部</button>${groups.map(g => `<button data-cat="${esc(g.category)}">${esc(g.category.length > 12 ? g.category.slice(0, 12) + '…' : g.category)}</button>`).join('')}</div>
@@ -243,18 +294,25 @@ async function renderOrder(orderId) {
   $app.querySelector('#forshop')?.addEventListener('click', async () => {
     const { items } = await api('GET', `/order/${orderId}/expand-for-buyer`);
     if (!items.length) return toast('這張單還沒有人訂');
+    const data = shopOrderLines(items);
     const title = `${expanded.shopName}｜${expanded.originator}`;
-    const text = () => shopOrderText(items, { title, withNames: el.querySelector('#names').checked });
+    const canvas = await drawShopImage(expanded.shopName, expanded.originator, data);
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+    const file = new File([blob], `${expanded.originator}.png`, { type: 'image/png' });
+    const canShare = navigator.canShare?.({ files: [file] });
+    const url = URL.createObjectURL(blob);
     const el = sheet(`<p class="big">給早餐店的清單</p>
-      <label class="row"><input type="checkbox" id="names"> 附上訂購人名字（方便店家分袋）</label>
-      <pre id="shoptext"></pre>
-      <div class="row" style="justify-content:flex-end"><button data-x>返回</button>${navigator.share ? '<button data-share>分享…</button>' : ''}<button class="primary" data-copy>複製</button></div>`);
-    const draw = () => { el.querySelector('#shoptext').textContent = text(); };
-    draw();
-    el.querySelector('#names').onchange = draw;
-    el.querySelector('[data-x]').onclick = () => el.remove();
-    el.querySelector('[data-copy]').onclick = () => navigator.clipboard.writeText(text()).then(() => toast('已複製，貼到 LINE 給店家'), () => toast('複製失敗'));
-    el.querySelector('[data-share]')?.addEventListener('click', () => navigator.share({ text: text() }).catch(() => {}));
+      <img src="${url}" alt="訂單圖片" style="width:100%;border-radius:12px;border:1px solid var(--line)">
+      <div class="row" style="justify-content:flex-end;margin-top:12px">
+        <button data-text>複製文字</button><a href="${url}" download="${esc(file.name)}"><button>下載</button></a>
+        ${canShare ? '<button data-share>分享到 LINE…</button>' : ''}<button class="primary" data-copy>複製圖片</button></div>
+      <p class="muted">複製後到 LINE 對話框貼上即可。</p>`);
+    el.querySelector('[data-copy]').onclick = async () => {
+      try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); toast('圖片已複製，到 LINE 貼上'); }
+      catch { toast('這個瀏覽器不能複製圖片，請用「下載」或「分享」'); }
+    };
+    el.querySelector('[data-text]').onclick = () => navigator.clipboard.writeText(shopOrderText(items, title)).then(() => toast('文字已複製'), () => toast('複製失敗'));
+    el.querySelector('[data-share]')?.addEventListener('click', () => navigator.share({ files: [file] }).catch(() => {}));
   });
   $app.querySelector('#toggleopen')?.addEventListener('click', async () => {
     if (open) {
@@ -268,6 +326,12 @@ async function renderOrder(orderId) {
     try { await api('POST', '/_open', { orderHashId: orderId, open: true, expireDate: null }, { admin: true }); toast('已重新開團，可以點餐了'); route(); }
     catch (err) { btn.disabled = false; toast(err.message); }
   });
+  $app.querySelector('#clearagain').onclick = async () => {
+    if (!await ask('<p class="big">清除全部「再買一次」？</p><p class="muted">只會清掉這個瀏覽器記住的品項，不影響已訂的餐。</p>', '全部清除')) return;
+    store.set('dbd.history', null);
+    $app.querySelector('#againbox').hidden = true;
+    toast('已清除');
+  };
   $app.querySelector('#again').onclick = async e => {
     const f = again()[e.target.closest('[data-forget]')?.dataset.forget];
     if (f) {
