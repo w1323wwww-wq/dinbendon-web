@@ -2,7 +2,7 @@
 // reload always picks up a new deploy (GitHub Pages caches files for 10 minutes).
 const v = new URL(import.meta.url).search;
 const { WORKER_URL } = await import(`./config.js${v}`);
-const { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory } = await import(`./lib.js${v}`);
+const { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory, shopOrderText } = await import(`./lib.js${v}`);
 
 let $app = document.getElementById('app');
 const $nav = document.getElementById('nav');
@@ -69,7 +69,21 @@ function showError(e) {
   $app.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p><button onclick="location.reload()">重新整理</button></div>`;
 }
 
+function rename() {
+  const el = sheet(`<p class="big">訂購人名字</p><input id="n" style="width:100%" value="${esc(store.get('dbd.name') || '')}">
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button data-x>返回</button><button class="primary" data-s>儲存</button></div>`);
+  el.querySelector('[data-x]').onclick = () => el.remove();
+  el.querySelector('[data-s]').onclick = () => {
+    const n = el.querySelector('#n').value.trim(); if (!n) return toast('名字不能空白');
+    store.set('dbd.name', n); el.remove(); route();
+  };
+}
+document.getElementById('who').onclick = e => { e.preventDefault(); if (store.get('dbd.name')) rename(); };
+
 function setNav(active) {
+  const who = document.getElementById('who');
+  who.textContent = store.get('dbd.name') ? `${store.get('dbd.name')} ✎` : '';
+  who.hidden = !store.get('dbd.name');
   $nav.innerHTML = store.get('dbd.access')
     ? `<a href="#/" class="${active === 'order' ? 'on' : ''}">點餐</a><a href="#/host" class="${active === 'host' ? 'on' : ''}">開團</a>`
     : '';
@@ -80,7 +94,7 @@ function renderSetup() {
   setNav();
   $app.innerHTML = `<div class="hero">
     <div class="logo">🍳</div>
-    <p class="big">弘爺生峰店・同事早餐團</p>
+    <p class="big">弘爺生峰店</p>
     <p class="muted">通關碼請向負責訂餐的同事拿。</p>
     <form id="f" class="row" style="justify-content:center">
       <input id="code" type="password" autocomplete="current-password" placeholder="通關碼" required>
@@ -130,13 +144,7 @@ async function renderOrders() {
       <div class="grow"><div class="title">${esc(o.originator)}</div><div class="muted">已截止</div></div>
       <span class="pill dim">查看</span>
     </a>`).join('') : '') +
-    `<p class="muted" style="margin-top:24px">訂購人：${esc(store.get('dbd.name'))} · <a href="#" id="rename">改名字</a></p>`;
-  $app.querySelector('#rename').onclick = e => {
-    e.preventDefault();
-    const el = sheet(`<p class="big">訂購人名字</p><input id="n" style="width:100%" value="${esc(store.get('dbd.name') || '')}">
-      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="primary" data-s>儲存</button></div>`);
-    el.querySelector('[data-s]').onclick = () => { store.set('dbd.name', el.querySelector('#n').value.trim()); el.remove(); route(); };
-  };
+    '';
 }
 
 async function renderOrder(orderId) {
@@ -188,7 +196,7 @@ async function renderOrder(orderId) {
   }
 
   const again = () => matchHistory(store.get('dbd.history'), rows).filter(h => !(h.row.image && h.row.price === 0));
-  const againHtml = () => again().map((h, i) => `<button data-again="${i}">${esc(label(h.row))}${h.note ? ` · ${esc(h.note)}` : ''} ${money(h.row.price)}</button>`).join('');
+  const againHtml = () => again().map((h, i) => `<span class="again-chip"><button data-again="${i}">${esc(label(h.row))}${h.note ? ` · ${esc(h.note)}` : ''} ${money(h.row.price)}</button><button data-forget="${i}" aria-label="刪除">✕</button></span>`).join('');
 
   function menuHtml() {
     const f = filter.trim().toLowerCase();
@@ -207,7 +215,7 @@ async function renderOrder(orderId) {
     <p><a href="#/">← 所有訂單</a></p>
     <div class="card">
       <div class="row"><span class="big grow">${esc(expanded.originator)} · ${esc(expanded.shopName)}</span>${open ? '' : '<span class="pill dim">已截止</span>'}
-        ${store.get('dbd.admin') ? `<button id="toggleopen">${open ? '關團' : '重新開團'}</button>` : ''}</div>
+        ${store.get('dbd.admin') ? `<button id="forshop">給早餐店</button><button id="toggleopen">${open ? '關團' : '重新開團'}</button>` : ''}</div>
       <div class="muted" id="ordersum">${expanded.size} 份 · ${money(expanded.total)}${expanded.shopTelNo ? ` · ☎ ${esc(expanded.shopTelNo)}` : ''}</div>
       ${data.shop.notice ? `<p class="muted">${esc(data.shop.notice)}</p>` : ''}
     </div>
@@ -232,6 +240,22 @@ async function renderOrder(orderId) {
     $app.querySelector('#all').innerHTML = allHtml(x.items);
     $app.querySelector('#ordersum').textContent = `${x.size} 份 · ${money(x.total)}${x.shopTelNo ? ` · ☎ ${x.shopTelNo}` : ''}`;
   };
+  $app.querySelector('#forshop')?.addEventListener('click', async () => {
+    const { items } = await api('GET', `/order/${orderId}/expand-for-buyer`);
+    if (!items.length) return toast('這張單還沒有人訂');
+    const title = `${expanded.shopName}｜${expanded.originator}`;
+    const text = () => shopOrderText(items, { title, withNames: el.querySelector('#names').checked });
+    const el = sheet(`<p class="big">給早餐店的清單</p>
+      <label class="row"><input type="checkbox" id="names"> 附上訂購人名字（方便店家分袋）</label>
+      <pre id="shoptext"></pre>
+      <div class="row" style="justify-content:flex-end"><button data-x>返回</button>${navigator.share ? '<button data-share>分享…</button>' : ''}<button class="primary" data-copy>複製</button></div>`);
+    const draw = () => { el.querySelector('#shoptext').textContent = text(); };
+    draw();
+    el.querySelector('#names').onchange = draw;
+    el.querySelector('[data-x]').onclick = () => el.remove();
+    el.querySelector('[data-copy]').onclick = () => navigator.clipboard.writeText(text()).then(() => toast('已複製，貼到 LINE 給店家'), () => toast('複製失敗'));
+    el.querySelector('[data-share]')?.addEventListener('click', () => navigator.share({ text: text() }).catch(() => {}));
+  });
   $app.querySelector('#toggleopen')?.addEventListener('click', async () => {
     if (open) {
       if (!await ask(`<p class="big">關團：${esc(expanded.originator)}？</p><p class="muted">關了之後大家就不能再訂或取消。</p>`, '關團')) return;
@@ -244,7 +268,14 @@ async function renderOrder(orderId) {
     try { await api('POST', '/_open', { orderHashId: orderId, open: true, expireDate: null }, { admin: true }); toast('已重新開團，可以點餐了'); route(); }
     catch (err) { btn.disabled = false; toast(err.message); }
   });
-  $app.querySelector('#again').onclick = e => {
+  $app.querySelector('#again').onclick = async e => {
+    const f = again()[e.target.closest('[data-forget]')?.dataset.forget];
+    if (f) {
+      if (!await ask(`<p class="big">從「再買一次」刪除？</p><p>${esc(label(f.row))}${f.note ? ` · ${esc(f.note)}` : ''}</p>`, '刪除')) return;
+      store.set('dbd.history', (store.get('dbd.history') || []).filter(h => !(h.product === f.product && h.variation === f.variation && h.note === f.note)));
+      $app.querySelector('#again').innerHTML = againHtml(); $app.querySelector('#againbox').hidden = !again().length;
+      return toast('已刪除');
+    }
     const h = again()[e.target.closest('[data-again]')?.dataset.again]; if (!h) return;
     const c = cart.get(h.row.key) || { qty: 0, note: h.note };
     c.qty = Math.min(99, c.qty + 1); c.note ||= h.note; cart.set(h.row.key, c); saveCart(); refreshMenu();
@@ -466,3 +497,27 @@ async function route() {
 
 window.addEventListener('hashchange', route);
 route();
+
+// New-version notice: fingerprint the deployed files; if they change while this tab is open, ask to reload.
+async function fingerprint() {
+  const texts = await Promise.all(['index.html', 'app.js', 'lib.js'].map(f => fetch(f, { cache: 'no-store' }).then(r => r.text())));
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(texts.join('\0')));
+  return [...new Uint8Array(buf)].slice(0, 8).join('.');
+}
+let loadedPrint = null;
+async function checkUpdate() {
+  try {
+    const p = await fingerprint();
+    if (loadedPrint === null) loadedPrint = p;
+    else if (p !== loadedPrint && !document.querySelector('.update-bar')) {
+      const bar = document.createElement('div');
+      bar.className = 'update-bar';
+      bar.innerHTML = '網頁有新版本 <button class="primary">重新整理</button>';
+      bar.querySelector('button').onclick = () => location.reload();
+      document.body.append(bar);
+    }
+  } catch {}
+}
+checkUpdate();
+setInterval(checkUpdate, 3 * 60e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });

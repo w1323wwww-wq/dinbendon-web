@@ -103,3 +103,20 @@ export function matchHistory(history, rows) {
   const byName = new Map(rows.map(r => [`${r.product}|${r.variation}`, r]));
   return (history || []).map(h => ({ ...h, row: byName.get(`${h.product}|${h.variation}`) })).filter(h => h.row);
 }
+
+// ----- 給早餐店: one order's items merged by product + note -----
+// items: expand-for-buyer items. Same product with different notes stays on separate lines.
+export function shopOrderText(items, { title = '', withNames = false } = {}) {
+  const lines = new Map();
+  let total = 0;
+  for (const it of items) {
+    const k = `${it.productFullName}|${it.comment || ''}`;
+    const l = lines.get(k) || { name: it.productFullName, note: it.comment || '', qty: 0, buyers: [] };
+    l.qty++; l.buyers.push(it.buyerName);
+    lines.set(k, l);
+    total += it.calculatedPrice ?? it.price ?? 0;
+  }
+  const body = [...lines.values()].map((l, i) =>
+    `${i + 1}. ${l.name} ×${l.qty}${l.note ? `（${l.note}）` : ''}${withNames ? `　${[...new Set(l.buyers)].join('、')}` : ''}`);
+  return [title, ...body, `共 ${items.length} 份，$${total}`].filter(Boolean).join('\n');
+}

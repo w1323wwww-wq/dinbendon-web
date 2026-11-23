@@ -1,7 +1,7 @@
 // Run: node test.mjs
 import assert from 'node:assert/strict';
 import { weekRange, summarize, formatSettlement, chunk } from './worker/settle.js';
-import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory } from './lib.js';
+import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory, shopOrderText } from './lib.js';
 
 // Shape recorded from dinbendon /order/{id}/get-add-item
 const data = {
@@ -72,5 +72,15 @@ hist = addHistory(hist, rows, new Map([['1:11', { qty: 1, note: '' }], ['2:22', 
 assert.deepEqual(hist.map(h => h.product + h.variation + h.note), ['玉米濃湯', '日式豬排蛋漢堡不要醬']);
 const m = matchHistory([...hist, { product: '已下架', variation: '', note: '' }], rows);
 assert.deepEqual(m.map(h => h.row.key), ['1:11', '2:22']);
+
+// 給早餐店
+const shopItems = [
+  { buyerName: 'Mao', productFullName: '紅茶(M冰)', comment: '微糖', price: 20 },
+  { buyerName: 'ian', productFullName: '日式豬排蛋(漢堡)', comment: null, price: 100 },
+  { buyerName: 'Mao', productFullName: '日式豬排蛋(漢堡)', comment: null, price: 100 },
+  { buyerName: 'Bob', productFullName: '紅茶(M冰)', comment: null, price: 20, calculatedPrice: 15 },
+];
+assert.equal(shopOrderText(shopItems, { title: '週三早餐' }), '週三早餐\n1. 紅茶(M冰) ×1（微糖）\n2. 日式豬排蛋(漢堡) ×2\n3. 紅茶(M冰) ×1\n共 4 份，$235');
+assert.match(shopOrderText(shopItems, { withNames: true }), /日式豬排蛋\(漢堡\) ×2　ian、Mao/);
 
 console.log('ok');
