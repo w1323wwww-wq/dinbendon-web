@@ -1,7 +1,7 @@
 // Run: node test.mjs
 import assert from 'node:assert/strict';
 import { weekRange, summarize, formatSettlement, chunk } from './worker/settle.js';
-import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime } from './lib.js';
+import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory } from './lib.js';
 
 // Shape recorded from dinbendon /order/{id}/get-add-item
 const data = {
@@ -38,6 +38,8 @@ const lines = myLines([
 ]);
 assert.equal(lines.length, 1);
 assert.deepEqual([lines[0].ids, lines[0].paidIds], [[1], [2]]);
+const byName = myLines([{ id: 3, buyerName: 'Bob', productFullName: '薯條', comment: null, price: 35, paid: false, buyer: false }], 'Bob');
+assert.deepEqual([byName.length, byName[0].ids, byName[0].otherIds], [1, [], [3]]);
 
 const w = nextWeekDays(new Date('2026-11-23T02:00:00Z')); // Mon 10:00 Taipei
 assert.equal(w[0].date, '2026-11-30');
@@ -63,5 +65,12 @@ assert.equal(formatSettlement(people), '周杰\nIan: 100\nMao: 30 + 50 = 80\nu: 
 assert.equal(formatSettlement([]), '周杰\n本週沒有訂單');
 const parts = chunk(Array.from({ length: 300 }, (_, i) => `line ${i} xxxxxxxxxx`).join('\n'));
 assert.ok(parts.length > 1 && parts.every(p => p.length <= 1900));
+
+// 再買一次
+let hist = addHistory([], rows, new Map([['2:22', { qty: 2, note: '不要醬' }]]));
+hist = addHistory(hist, rows, new Map([['1:11', { qty: 1, note: '' }], ['2:22', { qty: 1, note: '不要醬' }]]));
+assert.deepEqual(hist.map(h => h.product + h.variation + h.note), ['玉米濃湯', '日式豬排蛋漢堡不要醬']);
+const m = matchHistory([...hist, { product: '已下架', variation: '', note: '' }], rows);
+assert.deepEqual(m.map(h => h.row.key), ['1:11', '2:22']);
 
 console.log('ok');

@@ -1,5 +1,5 @@
 import { WORKER_URL } from './config.js';
-import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime } from './lib.js';
+import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory } from './lib.js';
 
 let $app = document.getElementById('app');
 const $nav = document.getElementById('nav');
@@ -94,7 +94,13 @@ function renderSetup() {
 
 async function renderOrders() {
   setNav('order');
-  const [orders, week] = await Promise.all([api('GET', '/order/progress'), api('GET', '/_week').catch(() => null)]);
+  const [progress, week, all] = await Promise.all([
+    api('GET', '/order/progress'), api('GET', '/_week').catch(() => null),
+    api('GET', '/order/manage-orders?first=0&size=20&sort=ID&asc=false').catch(() => null),
+  ]);
+  // /order/progress also returns closed orders kept on the home page "for reference".
+  const orders = progress.filter(o => o.inProgress);
+  const closed = (all?.items || []).filter(o => !o.inProgress && (o.lastExpireDate ?? o.createDate) > Date.now() - 14 * 86400e3).slice(0, 8);
   const me = week?.find(p => p.name === store.get('dbd.name'));
   $app.innerHTML = (week ? `<div class="card"><div class="muted">本週合計（${esc(store.get('dbd.name'))}）</div>
       <div class="big">${me ? `${me.parts.map(money).join(' + ')}${me.parts.length > 1 ? ` = ${money(me.total)}` : ''}` : '$0'}</div></div>` : '') +
@@ -104,6 +110,11 @@ async function renderOrders() {
       <div class="muted">${esc(o.shopName)} · 截止 ${esc(fmtTime(o.expireDate))}${o.passwordLocked ? ' · 🔒' : ''}</div>
       ${o.announcement ? `<div class="muted">📢 ${esc(o.announcement)}</div>` : ''}
     </a>`).join('') : `<p class="muted">目前沒有可以訂的單。</p>`) +
+    (closed.length ? `<h2>最近截止</h2>` + closed.map(o => `
+    <a class="card" href="#/order/${encodeURIComponent(o.orderHashId)}">
+      <div class="row"><span class="big grow">${esc(o.originator)}</span><span class="pill">已截止</span></div>
+      <div class="muted">${esc(o.shopName)} · ${esc(fmtTime(o.lastExpireDate))}</div>
+    </a>`).join('') : '') +
     `<p class="muted" style="margin-top:24px">訂購人：${esc(store.get('dbd.name'))} · <a href="#" id="rename">改名字</a></p>`;
   $app.querySelector('#rename').onclick = e => {
     e.preventDefault();
@@ -115,10 +126,9 @@ async function renderOrders() {
 
 async function renderOrder(orderId) {
   setNav('order');
-  const [data, expanded] = await Promise.all([
-    api('POST', `/order/${orderId}/get-add-item`, { fallbackPlayedBuyerName: null }),
-    api('GET', `/order/${orderId}/expand-for-buyer`),
-  ]);
+  const expanded = await api('GET', `/order/${orderId}/expand-for-buyer`);
+  const open = expanded.inProgress;
+  const data = open ? await api('POST', `/order/${orderId}/get-add-item`, { fallbackPlayedBuyerName: null }) : { shop: { categories: [] } };
   const rows = flattenMenu(data);
   const groups = groupMenu(rows);
   const byKey = new Map(rows.map(r => [r.key, r]));
@@ -132,20 +142,38 @@ async function renderOrder(orderId) {
   const label = r => r.variation ? `${r.product}（${r.variation}）` : r.product;
 
   function myLinesHtml(items) {
-    const lines = myLines(items);
+    const lines = myLines(items, store.get('dbd.name'));
     if (!lines.length) return `<p class="muted">你還沒訂。</p>`;
     let total = 0, unpaid = 0;
     const html = lines.map(l => {
-      const qty = l.ids.length + l.paidIds.length;
-      total += qty * l.price; unpaid += l.ids.length * l.price;
+      const qty = l.ids.length + l.paidIds.length + l.otherIds.length;
+      total += qty * l.price; unpaid += (l.ids.length + l.otherIds.length) * l.price;
       return `<div class="prod" data-line="${esc(l.key)}">
         <div class="name">${esc(l.name)}${l.note ? ` <span class="muted">· ${esc(l.note)}</span>` : ''}
           <div class="muted">${esc(l.buyerName)} · ${money(l.price)} × ${qty}${l.paidIds.length ? ` · <span class="pill ok">已付 ${l.paidIds.length}</span>` : ''}</div></div>
-        ${l.ids.length ? `<button data-one>少一份</button><button data-all>取消${l.paidIds.length ? '未付的' : ''}</button>` : ''}
+        ${open && l.ids.length ? `<button data-one>少一份</button><button data-all>取消${l.paidIds.length ? '未付的' : ''}</button>` : ''}
       </div>`;
     }).join('');
     return html + `<p class="muted" style="text-align:right">應付 ${money(total)} · 未付 <b>${money(unpaid)}</b></p>`;
   }
+
+  // Everyone's items, one row per buyer (dinbendon shows this to the whole group too).
+  function allHtml(items) {
+    if (!items.length) return `<p class="muted">還沒有人訂。</p>`;
+    const byBuyer = new Map();
+    for (const it of items) {
+      const b = byBuyer.get(it.buyerName) || { total: 0, things: new Map() };
+      const k = it.productFullName + (it.comment ? `（${it.comment}）` : '');
+      b.things.set(k, (b.things.get(k) || 0) + 1);
+      b.total += it.calculatedPrice ?? it.price;
+      byBuyer.set(it.buyerName, b);
+    }
+    return [...byBuyer].map(([name, b]) => `<div class="prod"><div class="name"><b>${esc(name)}</b>
+      <div class="muted">${[...b.things].map(([k, n]) => esc(k) + (n > 1 ? ` ×${n}` : '')).join('、')}</div></div><span>${money(b.total)}</span></div>`).join('');
+  }
+
+  const again = () => matchHistory(store.get('dbd.history'), rows).filter(h => !(h.row.image && h.row.price === 0));
+  const againHtml = () => again().map((h, i) => `<button data-again="${i}">${esc(label(h.row))}${h.note ? ` · ${esc(h.note)}` : ''} ${money(h.row.price)}</button>`).join('');
 
   function menuHtml() {
     const f = filter.trim().toLowerCase();
@@ -163,21 +191,37 @@ async function renderOrder(orderId) {
   $app.innerHTML = `
     <p><a href="#/">← 所有訂單</a></p>
     <div class="card">
-      <div class="big">${esc(expanded.originator)} · ${esc(data.shop.name)}</div>
-      <div class="muted">${expanded.size} 份 · ${money(expanded.total)}${expanded.shopTelNo ? ` · ☎ ${esc(expanded.shopTelNo)}` : ''}</div>
+      <div class="row"><span class="big grow">${esc(expanded.originator)} · ${esc(expanded.shopName)}</span>${open ? '' : '<span class="pill">已截止</span>'}</div>
+      <div class="muted" id="ordersum">${expanded.size} 份 · ${money(expanded.total)}${expanded.shopTelNo ? ` · ☎ ${esc(expanded.shopTelNo)}` : ''}</div>
       ${data.shop.notice ? `<p class="muted">${esc(data.shop.notice)}</p>` : ''}
     </div>
     <h2>我訂的</h2><div class="card" id="mine">${myLinesHtml(expanded.items)}</div>
+    <h2>大家點的</h2><div class="card" id="all">${allHtml(expanded.items)}</div>
+    ${open ? '' : '<p class="muted">這張單已截止，不能再訂或取消。</p>'}
+    <div ${open ? '' : 'hidden'}>
+    <div id="againbox" ${again().length ? '' : 'hidden'}><h2>再買一次</h2><div class="variants" id="again">${againHtml()}</div></div>
     <h2>菜單</h2>
     <input id="q" placeholder="搜尋品項…" style="width:100%">
     <div class="chips" id="chips"><button data-cat="" class="on">全部</button>${groups.map(g => `<button data-cat="${esc(g.category)}">${esc(g.category.length > 12 ? g.category.slice(0, 12) + '…' : g.category)}</button>`).join('')}</div>
     <div id="menu">${menuHtml()}</div>
+    </div>
     <div class="cartbar" id="cartbar" hidden><div class="bar"><span class="grow" id="cartsum"></span><button class="primary" id="opencart">查看並送出</button></div></div>`;
 
   const $menu = $app.querySelector('#menu'), $mine = $app.querySelector('#mine'), $bar = $app.querySelector('#cartbar');
-  const refreshBar = () => { $bar.hidden = !cart.size; $app.querySelector('#cartsum').textContent = `${cartQty()} 份 · ${money(cartTotal())}`; };
+  const refreshBar = () => { $bar.hidden = !open || !cart.size; $app.querySelector('#cartsum').textContent = `${cartQty()} 份 · ${money(cartTotal())}`; };
   const refreshMenu = () => { $menu.innerHTML = menuHtml(); refreshBar(); };
-  const reloadMine = async () => { $mine.innerHTML = myLinesHtml((await api('GET', `/order/${orderId}/expand-for-buyer`)).items); };
+  const reloadMine = async () => {
+    const x = await api('GET', `/order/${orderId}/expand-for-buyer`);
+    $mine.innerHTML = myLinesHtml(x.items);
+    $app.querySelector('#all').innerHTML = allHtml(x.items);
+    $app.querySelector('#ordersum').textContent = `${x.size} 份 · ${money(x.total)}${x.shopTelNo ? ` · ☎ ${x.shopTelNo}` : ''}`;
+  };
+  $app.querySelector('#again').onclick = e => {
+    const h = again()[e.target.closest('[data-again]')?.dataset.again]; if (!h) return;
+    const c = cart.get(h.row.key) || { qty: 0, note: h.note };
+    c.qty = Math.min(99, c.qty + 1); c.note ||= h.note; cart.set(h.row.key, c); saveCart(); refreshMenu();
+    toast(`已加入：${label(h.row)}`);
+  };
   refreshBar();
 
   $app.querySelector('#q').oninput = e => { filter = e.target.value; refreshMenu(); };
@@ -205,7 +249,7 @@ async function renderOrder(orderId) {
     const one = 'one' in e.target.dataset, all = 'all' in e.target.dataset;
     if (!one && !all) return;
     try {
-      const line = myLines((await api('GET', `/order/${orderId}/expand-for-buyer`)).items).find(l => l.key === key);
+      const line = myLines((await api('GET', `/order/${orderId}/expand-for-buyer`)).items, store.get('dbd.name')).find(l => l.key === key);
       if (!line?.ids.length) return reloadMine();
       const ids = one ? line.ids.slice(-1) : line.ids;
       if (!await ask(`取消「${esc(line.name)}${line.note ? '・' + esc(line.note) : ''}」${ids.length} 份？`, '確定取消')) return;
@@ -247,6 +291,8 @@ async function renderOrder(orderId) {
         try {
           const body = buildAddItemBody(data, rows, cart, store.get('dbd.name'));
           await api('POST', `/order/${orderId}/add-item`, body);
+          store.set('dbd.history', addHistory(store.get('dbd.history'), rows, cart));
+          $app.querySelector('#again').innerHTML = againHtml(); $app.querySelector('#againbox').hidden = !again().length;
           cart.clear(); saveCart(); el.remove(); refreshMenu();
           await reloadMine();
           toast('訂好了 ✅');
@@ -287,7 +333,11 @@ async function renderHost() {
     return bindToken();
   }
 
-  const [shopData, orders] = await Promise.all([api('GET', '/shop/available-shops', undefined, { admin: true }), api('GET', '/order/progress')]);
+  const [shopData, orders, all] = await Promise.all([
+    api('GET', '/shop/available-shops', undefined, { admin: true }), api('GET', '/order/progress').then(p => p.filter(o => o.inProgress)),
+    api('GET', '/order/manage-orders?first=0&size=20&sort=ID&asc=false'),
+  ]);
+  const closed = all.items.filter(o => !o.inProgress).slice(0, 10);
   const shops = [...(shopData.noCategoryShops || []), ...(shopData.categories || []).flatMap(c => c.shops || [])].filter(s => !s.retired);
   const days = nextWeekDays();
   const tpl = store.get('dbd.tpl') || { shop: shops[0]?.shopHashId, time: '08:00', on: ['一', '二', '三', '四', '五'], suffix: '早餐' };
@@ -315,7 +365,10 @@ async function renderHost() {
     </div>
     <h2>進行中的訂單</h2>
     ${orders.map(o => `<div class="card row"><span class="grow"><b>${esc(o.originator)}</b> <span class="muted">${esc(o.shopName)} · 截止 ${esc(fmtTime(o.expireDate))} · ${o.size} 份 ${money(o.total)}</span></span>
-      <a href="https://www.dinbendon.net/do/order?id=${encodeURIComponent(o.orderHashId)}" target="_blank" rel="noopener">在 dinbendon 管理 ↗</a></div>`).join('') || '<p class="muted">沒有。</p>'}`;
+      <a href="https://www.dinbendon.net/do/order?id=${encodeURIComponent(o.orderHashId)}" target="_blank" rel="noopener">在 dinbendon 管理 ↗</a></div>`).join('') || '<p class="muted">沒有。</p>'}
+    <h2>已截止的訂單</h2>
+    ${closed.map(o => `<div class="card row"><span class="grow"><b>${esc(o.originator)}</b> <span class="muted">${esc(o.shopName)} · ${esc(fmtTime(o.lastExpireDate))}</span></span>
+      <button data-reopen="${esc(o.orderHashId)}" data-name="${esc(o.originator)}">重新開團</button></div>`).join('') || '<p class="muted">沒有。</p>'}`;
   bindToken();
 
   const $ = s => $app.querySelector(s);
@@ -325,6 +378,24 @@ async function renderHost() {
     catch (e) { out.textContent = e.message; }
   };
   $('#preview').onclick = () => settle('GET');
+  $app.addEventListener('click', e => {
+    const b = e.target.closest('[data-reopen]'); if (!b) return;
+    const t = new Date(Date.now() + 8 * 3600e3 + 3600e3); // default: an hour from now, Taipei
+    const el = sheet(`<p class="big">重新開團：${esc(b.dataset.name)}</p>
+      <div class="row"><label>新的截止時間 <input id="rd" type="date" value="${t.toISOString().slice(0, 10)}"> <input id="rt" type="time" value="${t.toISOString().slice(11, 16)}"></label></div>
+      <label class="row" style="margin-top:8px"><input type="checkbox" id="rnone"> 不自動截止</label>
+      <div class="row" style="justify-content:flex-end;margin-top:16px"><button data-x>返回</button><button class="primary" data-go>重新開團</button></div>`);
+    el.querySelector('[data-x]').onclick = () => el.remove();
+    el.querySelector('[data-go]').onclick = async ev => {
+      const none = el.querySelector('#rnone').checked, d = el.querySelector('#rd').value, tm = el.querySelector('#rt').value;
+      if (!none && (!d || !tm)) return toast('請填截止時間');
+      ev.target.disabled = true;
+      try {
+        await api('POST', '/_reopen', { orderHashId: b.dataset.reopen, expireDate: none ? null : toExpireDate(d, tm) }, { admin: true });
+        el.remove(); toast('已重新開團'); route();
+      } catch (err) { ev.target.disabled = false; toast(err.message); }
+    };
+  });
   $('#copysettle').onclick = async () => {
     try { const r = await api('GET', '/_settle', undefined, { admin: true }); await navigator.clipboard.writeText(r.text); toast('已複製'); }
     catch (e) { toast(e.message); }

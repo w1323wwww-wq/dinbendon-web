@@ -51,14 +51,15 @@ export function buildAddItemBody(data, rows, cart, playedName) {
   return { addProducts, playedName: playedName.trim(), buyerInfo: null, addMisc: null, shopRevisionNo: data.shop.revisionNo };
 }
 
-// expand-for-buyer items → my lines (only items this browser placed), merged by name + note + price.
-export function myLines(items) {
+// expand-for-buyer items → my lines: items this browser placed (`buyer`) or under my name,
+// merged by name + note + price. Only this browser's unpaid items are cancelable (`ids`).
+export function myLines(items, myName = '') {
   const lines = new Map();
-  for (const it of items.filter(i => i.buyer)) {
+  for (const it of items.filter(i => i.buyer || (myName && i.buyerName === myName))) {
     const k = `${it.buyerName}|${it.productFullName}|${it.comment || ''}|${it.price}`;
-    if (!lines.has(k)) lines.set(k, { key: k, buyerName: it.buyerName, name: it.productFullName, note: it.comment || '', price: it.price, ids: [], paidIds: [] });
+    if (!lines.has(k)) lines.set(k, { key: k, buyerName: it.buyerName, name: it.productFullName, note: it.comment || '', price: it.calculatedPrice ?? it.price, ids: [], paidIds: [], otherIds: [] });
     const l = lines.get(k);
-    (it.paid ? l.paidIds : l.ids).push(it.id);
+    (it.paid ? l.paidIds : it.buyer ? l.ids : l.otherIds).push(it.id);
   }
   return [...lines.values()];
 }
@@ -84,4 +85,21 @@ export function fmtTime(t) {
   const tpe = new Date(new Date(t).getTime() + 8 * 3600e3);
   const p = n => String(n).padStart(2, '0');
   return `${tpe.getUTCMonth() + 1}/${tpe.getUTCDate()}（${WEEKDAY[tpe.getUTCDay()]}）${p(tpe.getUTCHours())}:${p(tpe.getUTCMinutes())}`;
+}
+
+// ----- 再買一次: per-browser order history -----
+const histKey = h => `${h.product}|${h.variation}|${h.note}`;
+
+// Prepend just-ordered items (newest first), dedupe by product+variation+note, keep `max`.
+export function addHistory(history, rows, cart, max = 12) {
+  const byKey = new Map(rows.map(r => [r.key, r]));
+  const fresh = [...cart].map(([k, c]) => byKey.get(k) && { product: byKey.get(k).product, variation: byKey.get(k).variation, note: c.note?.trim() || '' }).filter(Boolean);
+  const seen = new Set();
+  return [...fresh, ...(history || [])].filter(h => !seen.has(histKey(h)) && seen.add(histKey(h))).slice(0, max);
+}
+
+// History entries still on this menu (matched by name, so it survives menu edits), with their row.
+export function matchHistory(history, rows) {
+  const byName = new Map(rows.map(r => [`${r.product}|${r.variation}`, r]));
+  return (history || []).map(h => ({ ...h, row: byName.get(`${h.product}|${h.variation}`) })).filter(h => h.row);
 }

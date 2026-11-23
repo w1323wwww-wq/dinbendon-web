@@ -9,6 +9,7 @@ const ID = '[A-Za-z0-9]{6,20}';
 // [method, path regex, role]. Anything else is rejected.
 const ROUTES = [
   ['GET', /^\/order\/progress$/, 'user'],
+  ['GET', /^\/order\/manage-orders$/, 'user'],
   ['POST', new RegExp(`^/order/${ID}/get-add-item$`), 'user'],
   ['GET', new RegExp(`^/order/${ID}/expand-for-buyer$`), 'user'],
   ['POST', new RegExp(`^/order/${ID}/add-item$`), 'user'],
@@ -29,12 +30,13 @@ function jwtExp(token) {
   try { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp * 1000; } catch { return 0; }
 }
 
-async function upstream(env, method, path, { body, ownerKey } = {}) {
+async function upstream(env, method, path, { body, ownerKey, headers: extra } = {}) {
   const jwt = await env.KV.get('jwt');
   if (!jwt) return new Response(JSON.stringify({ error: '尚未設定 dinbendon token，請管理員到「開團」頁設定' }), { status: 503 });
   const headers = { Authorization: `Bearer ${jwt}`, Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (ownerKey) headers['X-DBD-Owner-Key'] = ownerKey;
+  Object.assign(headers, extra);
   const res = await fetch(UPSTREAM + path, { method, headers, body });
   const fresh = res.headers.get('x-dbd-new-token');
   if (fresh && fresh !== jwt) await env.KV.put('jwt', fresh);
@@ -62,6 +64,28 @@ async function buildSettlement(env, now = Date.now()) {
   const orders = await Promise.all(picked.map(o => upstreamData(env, `/order/${o.orderHashId}/expand-for-buyer`)));
   const people = summarize(orders);
   return { people, text: formatSettlement(people) };
+}
+
+async function upstreamPost(env, path, body, headers) {
+  const res = await upstream(env, 'POST', path, { body: JSON.stringify(body ?? null), headers });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || `dinbendon ${res.status} ${path}`);
+  return j.data;
+}
+
+// Reopen a closed order the same way the dinbendon manage page does: get a manage token,
+// set the new deadline first (else it would close again immediately), then flip in-progress.
+async function reopenOrder(env, orderHashId, expireDate) {
+  let token = await upstreamPost(env, '/order/unlock-manage', { orderHashId, password: '' });
+  let r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId });
+  if (r.status === 'RELOAD_WITH_NEW_TOKEN') {
+    token = r.newToken;
+    r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId });
+  }
+  if (r.status !== 'OK') throw new Error(`無法管理這張單（${r.status}）`);
+  const h = { 'X-DBD-Manage-Payment': token };
+  await upstreamPost(env, '/order/manage-payment/update-expire-date', { expireDate }, h);
+  if (!r.detail?.inProgress) await upstreamPost(env, '/order/manage-payment/toggle-in-progress', null, h);
 }
 
 async function sendDiscord(env, text) {
@@ -118,6 +142,16 @@ export default {
       } catch (e) { return json({ error: e.message }, 502); }
     }
 
+    // Admin: reopen a closed order with a new deadline ("YYYYMMDD hhmm" or null = no auto close).
+    if (path === '/_reopen' && request.method === 'POST') {
+      if (!isAdmin) return json({ error: '需要管理碼' }, 403);
+      const { orderHashId, expireDate } = await request.json().catch(() => ({}));
+      if (!new RegExp(`^${ID}$`).test(orderHashId || '') || (expireDate != null && !/^\d{8} \d{4}$/.test(expireDate)))
+        return json({ error: '參數錯誤' }, 400);
+      try { await reopenOrder(env, orderHashId, expireDate ?? null); return json({ data: { ok: true } }); }
+      catch (e) { return json({ error: e.message }, 502); }
+    }
+
     // Anyone with the access code: this week's per-person subtotals (same data the Discord post uses).
     if (path === '/_week' && request.method === 'GET') {
       try { return json({ data: (await buildSettlement(env)).people }); } catch (e) { return json({ error: e.message }, 502); }
@@ -128,7 +162,7 @@ export default {
     if (route[2] === 'admin' && !isAdmin) return json({ error: '需要管理碼' }, 403);
 
     const ownerKey = request.headers.get('X-Owner-Key') || '';
-    const res = await upstream(env, request.method, path, {
+    const res = await upstream(env, request.method, path + new URL(request.url).search, {
       body: request.method === 'POST' ? await request.text() : undefined,
       ownerKey: UUID.test(ownerKey) ? ownerKey : undefined,
     });
