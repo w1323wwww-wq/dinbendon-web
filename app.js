@@ -1,5 +1,8 @@
-import { WORKER_URL } from './config.js';
-import { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory } from './lib.js';
+// Load siblings with the same cache-busting ?v= that index.html gave this file, so a normal
+// reload always picks up a new deploy (GitHub Pages caches files for 10 minutes).
+const v = new URL(import.meta.url).search;
+const { WORKER_URL } = await import(`./config.js${v}`);
+const { flattenMenu, groupMenu, buildAddItemBody, myLines, nextWeekDays, toExpireDate, fmtTime, addHistory, matchHistory } = await import(`./lib.js${v}`);
 
 let $app = document.getElementById('app');
 const $nav = document.getElementById('nav');

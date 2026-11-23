@@ -72,6 +72,6 @@ pre { white-space: pre-wrap; font-size: 13px; }
   <nav id="nav"></nav>
 </div></header>
 <main id="app"><p class="muted">載入中…</p></main>
-<script type="module" src="app.js"></script>
+<script type="module">import(`./app.js?v=${Date.now()}`);</script>
 </body>
 </html>

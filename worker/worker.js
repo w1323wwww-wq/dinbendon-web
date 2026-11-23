@@ -66,26 +66,29 @@ async function buildSettlement(env, now = Date.now()) {
   return { people, text: formatSettlement(people) };
 }
 
-async function upstreamPost(env, path, body, headers) {
-  const res = await upstream(env, 'POST', path, { body: JSON.stringify(body ?? null), headers });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(j.error || `dinbendon ${res.status} ${path}`);
-  return j.data;
+// Some endpoints (unlock-manage) answer with a bare token string instead of {data}.
+async function upstreamPost(env, path, body, { headers, ownerKey } = {}) {
+  const res = await upstream(env, 'POST', path, { body: JSON.stringify(body ?? null), headers, ownerKey });
+  const text = await res.text();
+  let j; try { j = JSON.parse(text); } catch { j = null; }
+  if (!res.ok) throw new Error(j?.error || `dinbendon ${res.status} ${path}`);
+  return j && typeof j === 'object' && 'data' in j ? j.data : text.trim();
 }
 
 // Reopen a closed order the same way the dinbendon manage page does: get a manage token,
 // set the new deadline first (else it would close again immediately), then flip in-progress.
-async function reopenOrder(env, orderHashId, expireDate) {
-  let token = await upstreamPost(env, '/order/unlock-manage', { orderHashId, password: '' });
-  let r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId });
-  if (r.status === 'RELOAD_WITH_NEW_TOKEN') {
+// dinbendon rejects unlock-manage (400) without an owner key.
+async function reopenOrder(env, orderHashId, expireDate, ownerKey) {
+  let token = await upstreamPost(env, '/order/unlock-manage', { orderHashId, password: '' }, { ownerKey });
+  let r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId }, { ownerKey });
+  if (r?.status === 'RELOAD_WITH_NEW_TOKEN') {
     token = r.newToken;
-    r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId });
+    r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId }, { ownerKey });
   }
-  if (r.status !== 'OK') throw new Error(`無法管理這張單（${r.status}）`);
-  const h = { 'X-DBD-Manage-Payment': token };
-  await upstreamPost(env, '/order/manage-payment/update-expire-date', { expireDate }, h);
-  if (!r.detail?.inProgress) await upstreamPost(env, '/order/manage-payment/toggle-in-progress', null, h);
+  if (r?.status !== 'OK') throw new Error(`無法管理這張單（${r?.status ?? '未知'}）`);
+  const opts = { ownerKey, headers: { 'X-DBD-Manage-Payment': token } };
+  await upstreamPost(env, '/order/manage-payment/update-expire-date', { expireDate }, opts);
+  if (!r.detail?.inProgress) await upstreamPost(env, '/order/manage-payment/toggle-in-progress', null, opts);
 }
 
 async function sendDiscord(env, text) {
@@ -148,7 +151,9 @@ export default {
       const { orderHashId, expireDate } = await request.json().catch(() => ({}));
       if (!new RegExp(`^${ID}$`).test(orderHashId || '') || (expireDate != null && !/^\d{8} \d{4}$/.test(expireDate)))
         return json({ error: '參數錯誤' }, 400);
-      try { await reopenOrder(env, orderHashId, expireDate ?? null); return json({ data: { ok: true } }); }
+      const ownerKey = request.headers.get('X-Owner-Key') || '';
+      if (!UUID.test(ownerKey)) return json({ error: '缺少瀏覽器識別碼，請重新整理' }, 400);
+      try { await reopenOrder(env, orderHashId, expireDate ?? null, ownerKey); return json({ data: { ok: true } }); }
       catch (e) { return json({ error: e.message }, 502); }
     }
 
