@@ -4,7 +4,7 @@
 import { weekRange, summarize, formatSettlement, chunk } from './settle.js';
 
 const UPSTREAM = 'https://www.dinbendon.net/mvc/api';
-const SETTLE_CRON = '0 4 * * 5'; // Friday 12:00 Taipei
+const SETTLE_CRON = '0 2 * * 5'; // Friday 10:00 Taipei
 const ID = '[A-Za-z0-9]{6,20}';
 // [method, path regex, role]. Anything else is rejected.
 const ROUTES = [
@@ -59,12 +59,9 @@ async function buildSettlement(env, now = Date.now()) {
     if (items.length < 50 || items.at(-1).createDate < range.start - 14 * 86400e3) break;
   }
   picked.sort((a, b) => a.lastExpireDate - b.lastExpireDate);
-  const orders = [];
-  for (const o of picked) {
-    const d = await upstreamData(env, `/order/${o.orderHashId}/expand-for-buyer`);
-    orders.push({ originator: o.originator, shopName: o.shopName, lastExpireDate: o.lastExpireDate, items: d.items });
-  }
-  return formatSettlement(range, orders, summarize(orders));
+  const orders = await Promise.all(picked.map(o => upstreamData(env, `/order/${o.orderHashId}/expand-for-buyer`)));
+  const people = summarize(orders);
+  return { people, text: formatSettlement(people) };
 }
 
 async function sendDiscord(env, text) {
@@ -115,10 +112,15 @@ export default {
     if (path === '/_settle') {
       if (!isAdmin) return json({ error: '需要管理碼' }, 403);
       try {
-        const text = await buildSettlement(env);
+        const { text } = await buildSettlement(env);
         if (request.method === 'POST') await sendDiscord(env, text);
         return json({ data: { text, sent: request.method === 'POST' } });
       } catch (e) { return json({ error: e.message }, 502); }
+    }
+
+    // Anyone with the access code: this week's per-person subtotals (same data the Discord post uses).
+    if (path === '/_week' && request.method === 'GET') {
+      try { return json({ data: (await buildSettlement(env)).people }); } catch (e) { return json({ error: e.message }, 502); }
     }
 
     const route = ROUTES.find(([m, re]) => m === request.method && re.test(path));
@@ -134,7 +136,10 @@ export default {
   },
 
   async scheduled(event, env) {
-    if (event.cron === SETTLE_CRON) return sendDiscord(env, await buildSettlement(env));
+    if (event.cron === SETTLE_CRON) {
+      if (env.DISCORD_WEBHOOK) await sendDiscord(env, (await buildSettlement(env)).text);
+      return;
+    }
     // Daily ping so dinbendon can hand back a refreshed token before the 30-day expiry.
     await upstream(env, 'POST', '/auth/auth-login');
   },

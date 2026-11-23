@@ -10,6 +10,7 @@ export function flattenMenu(data) {
           key: `${p.id}:${v.id}`, productId: p.id, variationId: v.id,
           category: c.defined ? c.name : '其他', categoryName: c.defined ? c.name : null,
           product: p.name, variation: v.name || '', price: v.price,
+          image: p.image ? { thumb: p.image.thumbnailUrl || p.image.url, full: p.image.url } : null,
         });
       }
     }

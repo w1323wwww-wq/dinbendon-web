@@ -53,20 +53,14 @@ assert.equal(new Date(wr.start).toISOString(), '2026-11-22T16:00:00.000Z');
 assert.equal(wr.end - wr.start, 7 * 86400e3);
 assert.equal(weekRange(Date.parse('2026-11-22T16:00:00Z')).start, wr.start); // Mon 00:00 itself
 const orders = [
-  { originator: '週一早餐', shopName: '弘爺', lastExpireDate: Date.parse('2026-11-23T00:00:00Z'), items: [
-    { buyerName: 'Mao', price: 30, calculatedPrice: 30, paid: false }, { buyerName: 'ian', price: 70, calculatedPrice: 60, paid: true }] },
-  { originator: '週二早餐', shopName: '弘爺', lastExpireDate: Date.parse('2026-11-24T00:00:00Z'), items: [
-    { buyerName: 'Mao', price: 50, calculatedPrice: 50, paid: true }] },
+  { items: [{ buyerName: 'Mao', price: 30, calculatedPrice: 30 }, { buyerName: 'Ian', price: 70, calculatedPrice: 60 }, { buyerName: 'Ian', price: 40, calculatedPrice: 40 }] },
+  { items: [{ buyerName: 'Mao', price: 50, calculatedPrice: 50 }] },
+  { items: [{ buyerName: 'u', price: 30 }] },
 ];
-const sum = summarize(orders);
-assert.equal(sum.total, 140);
-assert.deepEqual(sum.people.map(p => [p.name, p.total, p.unpaid]), [['Mao', 80, 30], ['ian', 60, 0]]);
-const text = formatSettlement(wr, orders, sum);
-assert.match(text, /11\/23（一） – 11\/29（日）/);
-assert.match(text, /Mao：\*\*\$30\*\*（共 \$80，已付 \$50）/);
-assert.match(text, /ian：\$60（已付清）/);
-assert.match(text, /合計 \$140，未收 \$30/);
-assert.match(formatSettlement(wr, [], summarize([])), /本週沒有訂單/);
+const people = summarize(orders);
+assert.deepEqual(people.map(p => [p.name, p.parts, p.total]), [['Ian', [100], 100], ['Mao', [30, 50], 80], ['u', [30], 30]]);
+assert.equal(formatSettlement(people), '周杰\nIan: 100\nMao: 30 + 50 = 80\nu: 30');
+assert.equal(formatSettlement([]), '周杰\n本週沒有訂單');
 const parts = chunk(Array.from({ length: 300 }, (_, i) => `line ${i} xxxxxxxxxx`).join('\n'));
 assert.ok(parts.length > 1 && parts.every(p => p.length <= 1900));
 

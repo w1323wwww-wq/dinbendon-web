@@ -5,6 +5,7 @@ let $app = document.getElementById('app');
 const $nav = document.getElementById('nav');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = n => `$${Number(n || 0).toLocaleString()}`;
+const abs = u => (u.startsWith('/') ? 'https://www.dinbendon.net' + u : u);
 
 // ---------- storage (may be unavailable in private mode) ----------
 const store = {
@@ -93,8 +94,11 @@ function renderSetup() {
 
 async function renderOrders() {
   setNav('order');
-  const orders = await api('GET', '/order/progress');
-  $app.innerHTML = `<h2>進行中的訂單</h2>` + (orders.length ? orders.map(o => `
+  const [orders, week] = await Promise.all([api('GET', '/order/progress'), api('GET', '/_week').catch(() => null)]);
+  const me = week?.find(p => p.name === store.get('dbd.name'));
+  $app.innerHTML = (week ? `<div class="card"><div class="muted">本週合計（${esc(store.get('dbd.name'))}）</div>
+      <div class="big">${me ? `${me.parts.map(money).join(' + ')}${me.parts.length > 1 ? ` = ${money(me.total)}` : ''}` : '$0'}</div></div>` : '') +
+    `<h2>進行中的訂單</h2>` + (orders.length ? orders.map(o => `
     <a class="card" href="#/order/${encodeURIComponent(o.orderHashId)}">
       <div class="row"><span class="big grow">${esc(o.originator)}</span><span class="pill">${o.size} 份 · ${money(o.total)}</span></div>
       <div class="muted">${esc(o.shopName)} · 截止 ${esc(fmtTime(o.expireDate))}${o.passwordLocked ? ' · 🔒' : ''}</div>
@@ -149,7 +153,7 @@ async function renderOrder(orderId) {
       const prods = g.products.filter(p => !f || p.product.toLowerCase().includes(f) || g.category.toLowerCase().includes(f));
       if (!prods.length) return '';
       return `<div class="cat">${esc(g.category)}</div>` + prods.map(p => `
-        <div class="prod"><div class="name">${esc(p.product)}</div><div class="variants">${p.variants.map(v => {
+        <div class="prod">${p.variants[0].image ? `<img class="thumb" src="${esc(abs(p.variants[0].image.thumb))}" data-full="${esc(abs(p.variants[0].image.full))}" alt="${esc(p.product)}" loading="lazy">` : ''}<div class="name">${esc(p.product)}</div><div class="variants">${p.variants.filter(v => !(v.image && v.price === 0)).map(v => {
           const n = cart.get(v.key)?.qty;
           return `<button data-add="${esc(v.key)}">${v.variation ? esc(v.variation) + ' ' : ''}${money(v.price)}${n ? `<span class="n">${n}</span>` : ''}</button>`;
         }).join('')}</div></div>`).join('');
@@ -184,6 +188,13 @@ async function renderOrder(orderId) {
     refreshMenu();
   };
   $menu.onclick = e => {
+    if (e.target.dataset.full) {
+      const box = document.createElement('div');
+      box.className = 'lightbox';
+      box.innerHTML = `<img src="${esc(e.target.dataset.full)}" alt="">`;
+      box.onclick = () => box.remove();
+      return document.body.append(box);
+    }
     const k = e.target.closest('[data-add]')?.dataset.add; if (!k) return;
     const c = cart.get(k) || { qty: 0, note: '' };
     c.qty = Math.min(99, c.qty + 1); cart.set(k, c); saveCart(); refreshMenu();
@@ -284,8 +295,8 @@ async function renderHost() {
   $app.innerHTML = tokenCard + `
     <h2>每週結算</h2>
     <div class="card">
-      <div class="muted">每週五 12:00 自動把本週每個人的金額發到 Discord。</div>
-      <div class="row" style="margin-top:10px"><button id="preview">預覽本週</button><button id="sendnow">現在發到 Discord</button></div>
+      <div class="muted">每週五 10:00 自動把本週每個人的金額發到 Discord（需設定 webhook）。</div>
+      <div class="row" style="margin-top:10px"><button id="preview">預覽本週</button><button id="copysettle">複製</button><button id="sendnow">現在發到 Discord</button></div>
       <pre id="settle" hidden></pre>
     </div>
     <h2>開下週的單</h2>
@@ -314,6 +325,10 @@ async function renderHost() {
     catch (e) { out.textContent = e.message; }
   };
   $('#preview').onclick = () => settle('GET');
+  $('#copysettle').onclick = async () => {
+    try { const r = await api('GET', '/_settle', undefined, { admin: true }); await navigator.clipboard.writeText(r.text); toast('已複製'); }
+    catch (e) { toast(e.message); }
+  };
   $('#sendnow').onclick = async () => { if (await ask('<p class="big">現在把本週結算發到 Discord？</p>', '發送')) settle('POST'); };
   const labels = () => {
     for (const cb of $app.querySelectorAll('[data-day]'))
