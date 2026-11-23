@@ -79,7 +79,8 @@ function setNav(active) {
 function renderSetup() {
   setNav();
   $app.innerHTML = `<div class="hero">
-    <p class="big">輸入通關碼</p>
+    <div class="logo">🍳</div>
+    <p class="big">弘爺生峰店・同事早餐團</p>
     <p class="muted">通關碼請向負責訂餐的同事拿。</p>
     <form id="f" class="row" style="justify-content:center">
       <input id="code" type="password" autocomplete="current-password" placeholder="通關碼" required>
@@ -95,6 +96,13 @@ function renderSetup() {
   };
 }
 
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+function dateBadge(ms) {
+  if (ms == null) return `<div class="date"><b>∞</b><span>隨時</span></div>`;
+  const t = new Date(ms + 8 * 3600e3);
+  return `<div class="date"><b>${WD[t.getUTCDay()]}</b><span>${t.getUTCMonth() + 1}/${t.getUTCDate()}</span></div>`;
+}
+
 async function renderOrders() {
   setNav('order');
   const [progress, week, all] = await Promise.all([
@@ -105,18 +113,22 @@ async function renderOrders() {
   const orders = progress.filter(o => o.inProgress);
   const closed = (all?.items || []).filter(o => !o.inProgress && (o.lastExpireDate ?? o.createDate) > Date.now() - 14 * 86400e3).slice(0, 8);
   const me = week?.find(p => p.name === store.get('dbd.name'));
-  $app.innerHTML = (week ? `<div class="card"><div class="muted">本週合計（${esc(store.get('dbd.name'))}）</div>
-      <div class="big">${me ? `${me.parts.map(money).join(' + ')}${me.parts.length > 1 ? ` = ${money(me.total)}` : ''}` : '$0'}</div></div>` : '') +
+  $app.innerHTML = (week ? `<div class="card hero-total"><div class="muted">${esc(store.get('dbd.name'))} 的本週合計</div>
+      <div class="amount">${money(me?.total || 0)}</div>
+      ${me?.parts.length > 1 ? `<div class="parts">${me.parts.map(money).join(' + ')}</div>` : ''}</div>` : '') +
     `<h2>進行中的訂單</h2>` + (orders.length ? orders.map(o => `
-    <a class="card" href="#/order/${encodeURIComponent(o.orderHashId)}">
-      <div class="row"><span class="big grow">${esc(o.originator)}</span><span class="pill">${o.size} 份 · ${money(o.total)}</span></div>
-      <div class="muted">${esc(o.shopName)} · 截止 ${esc(fmtTime(o.expireDate))}${o.passwordLocked ? ' · 🔒' : ''}</div>
-      ${o.announcement ? `<div class="muted">📢 ${esc(o.announcement)}</div>` : ''}
+    <a class="card order" href="#/order/${encodeURIComponent(o.orderHashId)}">
+      ${dateBadge(o.expireDate)}
+      <div class="grow"><div class="title">${esc(o.originator)}</div>
+        <div class="muted">${o.expireDate ? `${esc(fmtTime(o.expireDate))} 截止` : '不自動截止'}${o.passwordLocked ? ' · 🔒' : ''}</div>
+        ${o.announcement ? `<div class="muted">📢 ${esc(o.announcement)}</div>` : ''}</div>
+      <span class="pill">${o.size} 份 · ${money(o.total)}</span>
     </a>`).join('') : `<p class="muted">目前沒有可以訂的單。</p>`) +
     (closed.length ? `<h2>最近截止</h2>` + closed.map(o => `
-    <a class="card" href="#/order/${encodeURIComponent(o.orderHashId)}">
-      <div class="row"><span class="big grow">${esc(o.originator)}</span><span class="pill">已截止</span></div>
-      <div class="muted">${esc(o.shopName)} · ${esc(fmtTime(o.lastExpireDate))}</div>
+    <a class="card order closed" href="#/order/${encodeURIComponent(o.orderHashId)}">
+      ${dateBadge(o.lastExpireDate ?? o.createDate)}
+      <div class="grow"><div class="title">${esc(o.originator)}</div><div class="muted">已截止</div></div>
+      <span class="pill dim">查看</span>
     </a>`).join('') : '') +
     `<p class="muted" style="margin-top:24px">訂購人：${esc(store.get('dbd.name'))} · <a href="#" id="rename">改名字</a></p>`;
   $app.querySelector('#rename').onclick = e => {
@@ -157,7 +169,7 @@ async function renderOrder(orderId) {
         ${open && l.ids.length ? `<button data-one>少一份</button><button data-all>取消</button>` : ''}
       </div>`;
     }).join('');
-    return html + `<p style="text-align:right">總計 <b>${money(total)}</b></p>`;
+    return html + `<p class="total-line">總計 <b>${money(total)}</b></p>`;
   }
 
   // Everyone's items, one row per buyer (dinbendon shows this to the whole group too).
@@ -194,7 +206,7 @@ async function renderOrder(orderId) {
   $app.innerHTML = `
     <p><a href="#/">← 所有訂單</a></p>
     <div class="card">
-      <div class="row"><span class="big grow">${esc(expanded.originator)} · ${esc(expanded.shopName)}</span>${open ? '' : '<span class="pill">已截止</span>'}
+      <div class="row"><span class="big grow">${esc(expanded.originator)} · ${esc(expanded.shopName)}</span>${open ? '' : '<span class="pill dim">已截止</span>'}
         ${store.get('dbd.admin') ? `<button id="toggleopen">${open ? '關團' : '重新開團'}</button>` : ''}</div>
       <div class="muted" id="ordersum">${expanded.size} 份 · ${money(expanded.total)}${expanded.shopTelNo ? ` · ☎ ${esc(expanded.shopTelNo)}` : ''}</div>
       ${data.shop.notice ? `<p class="muted">${esc(data.shop.notice)}</p>` : ''}
@@ -227,21 +239,10 @@ async function renderOrder(orderId) {
       catch (err) { toast(err.message); }
       return;
     }
-    const t = new Date(Date.now() + 8 * 3600e3 + 30 * 60e3); // default: 30 min from now, Taipei
-    const el = sheet(`<p class="big">重新開團：${esc(expanded.originator)}</p>
-      <div class="row"><label>自動截止 <input id="rd" type="date" value="${t.toISOString().slice(0, 10)}"> <input id="rt" type="time" value="${t.toISOString().slice(11, 16)}"></label></div>
-      <label class="row" style="margin-top:8px"><input type="checkbox" id="rnone"> 不自動截止（點完自己按「關團」）</label>
-      <div class="row" style="justify-content:flex-end;margin-top:16px"><button data-x>返回</button><button class="primary" data-go>重新開團</button></div>`);
-    el.querySelector('[data-x]').onclick = () => el.remove();
-    el.querySelector('[data-go]').onclick = async ev => {
-      const none = el.querySelector('#rnone').checked, d = el.querySelector('#rd').value, tm = el.querySelector('#rt').value;
-      if (!none && (!d || !tm)) return toast('請填截止時間');
-      ev.target.disabled = true;
-      try {
-        await api('POST', '/_open', { orderHashId: orderId, open: true, expireDate: none ? null : toExpireDate(d, tm) }, { admin: true });
-        el.remove(); toast('已重新開團，可以點餐了'); route();
-      } catch (err) { ev.target.disabled = false; toast(err.message); }
-    };
+    // Reopen with no auto deadline; the admin closes it with 關團 after ordering.
+    const btn = $app.querySelector('#toggleopen'); btn.disabled = true;
+    try { await api('POST', '/_open', { orderHashId: orderId, open: true, expireDate: null }, { admin: true }); toast('已重新開團，可以點餐了'); route(); }
+    catch (err) { btn.disabled = false; toast(err.message); }
   });
   $app.querySelector('#again').onclick = e => {
     const h = again()[e.target.closest('[data-again]')?.dataset.again]; if (!h) return;
