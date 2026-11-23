@@ -5,3 +5,13 @@ compatibility_date = "2026-11-01"
 [vars]
 # Comma-separated. Your GitHub Pages origin (no path), plus localhost for testing.
 ALLOWED_ORIGINS = "https://w1323wwww-wq.github.io,http://localhost:8000"
+
+# Stores the group account's JWT. Create with: npx wrangler kv namespace create KV
+[[kv_namespaces]]
+binding = "KV"
+id = "999caa65bb34441aaae483eaad74392f"
+
+[triggers]
+crons = ["0 1 * * *"]
+
+# Secrets (not in this file): npx wrangler secret put ACCESS_CODE / ADMIN_CODE

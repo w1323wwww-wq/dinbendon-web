@@ -1,44 +1,42 @@
 # 公司訂便當
 
-GitHub Pages 頁面，透過 dinbendon 官方 MCP（AI 應用連結，beta）讓同事點餐、讓負責人一次開好下週的單。
+GitHub Pages 頁面，讓同事點 dinbendon 的團購單，也讓負責人一次開好下週的單。
 
 ```
-瀏覽器（GitHub Pages）──► Cloudflare Worker（CORS 轉發，不存資料）──► dinbendon.net/mcp
-        └── OAuth 授權頁直接跳 dinbendon.net/oauth/authorize
+瀏覽器（GitHub Pages）──► Cloudflare Worker ──► www.dinbendon.net/mvc/api（dinbendon 網站自己用的 JSON API）
+                          · 以群組帳號身分呼叫（JWT 存在 KV）
+                          · 每天 cron 續期 token
 ```
 
-- 每位同事用自己的 dinbendon **個人帳號**登入授權；token 只存在他自己的瀏覽器。
-- Worker 只轉發 `/mcp` 和 `/oauth/token`，只接受 `ALLOWED_ORIGINS` 裡的來源。
-- OAuth client 是公開用戶端（PKCE），`client_id` 就是 `client.json` 的網址。
+- 同事輸入**通關碼**和名字就能點，不需要 dinbendon 帳號。
+- 每個瀏覽器有自己的訂購人識別碼（同 dinbendon 的 `dbd-owner-key`），只能取消自己訂的。
+- 開團需要**管理碼**。
+- Worker 只轉發固定幾個 API；不存密碼，只存群組帳號的 JWT。
 
-## 部署
+## 設定（一次）
 
-1. **建 GitHub repo** `dinbendon-web`，推上這個資料夾。Settings → Pages → Branch `main` / root。
-   網址會是 `https://<你的帳號>.github.io/dinbendon-web/`。
-2. **改 `client.json`**：把 3 個 `YOUR_GH_USER` 換成你的 GitHub 帳號。網址必須和實際網址完全一致（含結尾 `/`）。
-3. **部署 Worker**（需要 Cloudflare 免費帳號）：
+1. **設定通關碼和管理碼**（自己想兩組，管理碼別給同事）：
    ```sh
    cd worker
-   # 先把 wrangler.toml 的 YOUR_GH_USER 換掉
-   npx wrangler login
-   npx wrangler deploy
+   npx wrangler secret put ACCESS_CODE
+   npx wrangler secret put ADMIN_CODE
    ```
-   會印出 `https://dinbendon-proxy.<子網域>.workers.dev`。
-4. **改 `config.js`** 的 `WORKER_URL` 成上一步的網址，commit、push。
-5. 打開頁面 → 登入 dinbendon → 選群組 → 同意。
+2. **放入群組帳號 token**：開頁面 → 輸入通關碼 → 「開團」→ 輸入管理碼 → 照畫面說明貼上 token。
+   取得 token：用群組帳號登入 dinbendon，F12 → Console → `copy(localStorage.getItem('dbd-jwt'))`。
+   token 有效 30 天，Worker 每天會嘗試續期；頁面會顯示剩幾天。
+3. 把頁面網址和通關碼給同事。
 
-## 功能
+## 改 Worker 之後重新部署
 
-- **點餐**：進行中的訂單 → 菜單（搜尋、分類、規格按鈕）→ 購物車加品項說明 → 送出；我訂的品項可改份數、改說明、取消。
-- **開團**：選店家、勾下週哪幾天、每天截止時間 → 一次開好（公告寫「週X早餐」）；設定會記住。
-- **我開的單**：按件統計（可複製給店家）、按人統計、標記付款、截止。
+```sh
+cd worker && npx wrangler deploy
+```
 
 ## 限制
 
-- 只有個人帳號能用；群組管理員可以在管理中心關掉「允許成員連結 AI 應用」。
-- 用這個頁面開的單，負責人一定顯示你的暱稱（MCP 沒有自訂負責人名稱），所以「週二早餐」放在公告。
-- 代訂、改價、菜單外品項、改截止時間，要到 dinbendon 網站操作。
-- dinbendon MCP 還在 beta，格式可能變動。
+- 用的是 dinbendon 網站內部 API，沒有官方保證；網站改版可能要跟著改。
+- 代訂、改價、標記付款、截止，請點「在 dinbendon 管理」到網站操作。
+- 訂單如果要求填「訂購人資訊」，這個頁面送不出去，要到網站訂。
 
 ## 測試
 

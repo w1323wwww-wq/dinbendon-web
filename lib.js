@@ -1,52 +1,65 @@
 // Pure helpers (no DOM) — covered by test.mjs.
 
-export function b64url(bytes) {
-  let s = '';
-  for (const b of new Uint8Array(bytes)) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-export async function pkcePair() {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-  return { verifier, challenge };
-}
-
-// Streamable HTTP may answer with plain JSON or an SSE stream; return the JSON-RPC message with this id.
-export function parseRpcResponse(contentType, body, id) {
-  if ((contentType || '').includes('text/event-stream')) {
-    for (const event of body.split(/\r?\n\r?\n/)) {
-      const data = event.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
-      if (!data) continue;
-      const msg = JSON.parse(data);
-      if (msg.id === id) return msg;
+// get-add-item response → flat rows, one per product × variation.
+export function flattenMenu(data) {
+  const rows = [];
+  for (const c of data.shop.categories) {
+    for (const p of c.products) {
+      for (const v of p.variations) {
+        rows.push({
+          key: `${p.id}:${v.id}`, productId: p.id, variationId: v.id,
+          category: c.defined ? c.name : '其他', categoryName: c.defined ? c.name : null,
+          product: p.name, variation: v.name || '', price: v.price,
+        });
+      }
     }
-    throw new Error('SSE 回應裡找不到對應的結果');
   }
-  return JSON.parse(body);
+  return rows;
 }
 
-// tools/call result → parsed JSON payload; tool errors become thrown Errors with the server's text.
-export function unwrapToolResult(result) {
-  const text = (result.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
-  if (result.isError) throw new Error(text || '操作失敗');
-  if (result.structuredContent) return result.structuredContent;
-  try { return JSON.parse(text); } catch { return { text }; }
-}
-
-// Flat menu rows → [{category, products:[{product, variants:[row]}]}], keeping menu order.
-export function groupMenu(items) {
+// Flat rows → [{category, products:[{product, variants:[row]}]}], keeping menu order.
+export function groupMenu(rows) {
   const cats = new Map();
-  for (const it of items) {
-    if (!cats.has(it.category)) cats.set(it.category, new Map());
-    const prods = cats.get(it.category);
-    if (!prods.has(it.product)) prods.set(it.product, []);
-    prods.get(it.product).push(it);
+  for (const r of rows) {
+    if (!cats.has(r.category)) cats.set(r.category, new Map());
+    const prods = cats.get(r.category);
+    if (!prods.has(r.product)) prods.set(r.product, []);
+    prods.get(r.product).push(r);
   }
   return [...cats].map(([category, prods]) => ({
     category,
     products: [...prods].map(([product, variants]) => ({ product, variants })),
   }));
+}
+
+// Same payload the dinbendon web form sends to /order/{id}/add-item.
+export function buildAddItemBody(data, rows, cart, playedName) {
+  const byKey = new Map(rows.map(r => [r.key, r]));
+  const addProducts = [];
+  for (const [key, c] of cart) {
+    const r = byKey.get(key);
+    if (!r) throw new Error('菜單已變更，請重新整理');
+    if (!(c.qty >= 1 && c.qty <= 99)) throw new Error(`「${r.product}」份數要在 1–99`);
+    addProducts.push({
+      productId: r.productId, variationId: r.variationId, qty: c.qty, comment: c.note?.trim() || null,
+      categoryName: r.categoryName, productName: r.product, variationName: r.variation, price: r.price,
+    });
+  }
+  if (!addProducts.length) throw new Error('還沒選品項');
+  if (!playedName?.trim()) throw new Error('請填訂購人名字');
+  return { addProducts, playedName: playedName.trim(), buyerInfo: null, addMisc: null, shopRevisionNo: data.shop.revisionNo };
+}
+
+// expand-for-buyer items → my lines (only items this browser placed), merged by name + note + price.
+export function myLines(items) {
+  const lines = new Map();
+  for (const it of items.filter(i => i.buyer)) {
+    const k = `${it.buyerName}|${it.productFullName}|${it.comment || ''}|${it.price}`;
+    if (!lines.has(k)) lines.set(k, { key: k, buyerName: it.buyerName, name: it.productFullName, note: it.comment || '', price: it.price, ids: [], paidIds: [] });
+    const l = lines.get(k);
+    (it.paid ? l.paidIds : l.ids).push(it.id);
+  }
+  return [...lines.values()];
 }
 
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
@@ -62,10 +75,12 @@ export function nextWeekDays(now = new Date()) {
   });
 }
 
-export function fmtTime(iso) {
-  if (!iso) return '不自動截止';
-  const d = new Date(iso);
-  const tpe = new Date(d.getTime() + 8 * 3600e3);
+// "2026-12-01" + "08:00" → "20261201 0800" (format the dinbendon create form accepts)
+export const toExpireDate = (date, time) => `${date.replace(/-/g, '')} ${time.replace(':', '')}`;
+
+export function fmtTime(t) {
+  if (t == null) return '不自動截止';
+  const tpe = new Date(new Date(t).getTime() + 8 * 3600e3);
   const p = n => String(n).padStart(2, '0');
   return `${tpe.getUTCMonth() + 1}/${tpe.getUTCDate()}（${WEEKDAY[tpe.getUTCDay()]}）${p(tpe.getUTCHours())}:${p(tpe.getUTCMinutes())}`;
 }
