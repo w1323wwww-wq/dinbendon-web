@@ -147,17 +147,17 @@ async function renderOrder(orderId) {
   function myLinesHtml(items) {
     const lines = myLines(items, store.get('dbd.name'));
     if (!lines.length) return `<p class="muted">你還沒訂。</p>`;
-    let total = 0, unpaid = 0;
+    let total = 0;
     const html = lines.map(l => {
       const qty = l.ids.length + l.paidIds.length + l.otherIds.length;
-      total += qty * l.price; unpaid += (l.ids.length + l.otherIds.length) * l.price;
+      total += qty * l.price;
       return `<div class="prod" data-line="${esc(l.key)}">
         <div class="name">${esc(l.name)}${l.note ? ` <span class="muted">· ${esc(l.note)}</span>` : ''}
-          <div class="muted">${esc(l.buyerName)} · ${money(l.price)} × ${qty}${l.paidIds.length ? ` · <span class="pill ok">已付 ${l.paidIds.length}</span>` : ''}</div></div>
-        ${open && l.ids.length ? `<button data-one>少一份</button><button data-all>取消${l.paidIds.length ? '未付的' : ''}</button>` : ''}
+          <div class="muted">${esc(l.buyerName)} · ${money(l.price)} × ${qty}</div></div>
+        ${open && l.ids.length ? `<button data-one>少一份</button><button data-all>取消</button>` : ''}
       </div>`;
     }).join('');
-    return html + `<p class="muted" style="text-align:right">應付 ${money(total)} · 未付 <b>${money(unpaid)}</b></p>`;
+    return html + `<p style="text-align:right">總計 <b>${money(total)}</b></p>`;
   }
 
   // Everyone's items, one row per buyer (dinbendon shows this to the whole group too).
@@ -194,7 +194,8 @@ async function renderOrder(orderId) {
   $app.innerHTML = `
     <p><a href="#/">← 所有訂單</a></p>
     <div class="card">
-      <div class="row"><span class="big grow">${esc(expanded.originator)} · ${esc(expanded.shopName)}</span>${open ? '' : '<span class="pill">已截止</span>'}</div>
+      <div class="row"><span class="big grow">${esc(expanded.originator)} · ${esc(expanded.shopName)}</span>${open ? '' : '<span class="pill">已截止</span>'}
+        ${store.get('dbd.admin') ? `<button id="toggleopen">${open ? '關團' : '重新開團'}</button>` : ''}</div>
       <div class="muted" id="ordersum">${expanded.size} 份 · ${money(expanded.total)}${expanded.shopTelNo ? ` · ☎ ${esc(expanded.shopTelNo)}` : ''}</div>
       ${data.shop.notice ? `<p class="muted">${esc(data.shop.notice)}</p>` : ''}
     </div>
@@ -219,6 +220,29 @@ async function renderOrder(orderId) {
     $app.querySelector('#all').innerHTML = allHtml(x.items);
     $app.querySelector('#ordersum').textContent = `${x.size} 份 · ${money(x.total)}${x.shopTelNo ? ` · ☎ ${x.shopTelNo}` : ''}`;
   };
+  $app.querySelector('#toggleopen')?.addEventListener('click', async () => {
+    if (open) {
+      if (!await ask(`<p class="big">關團：${esc(expanded.originator)}？</p><p class="muted">關了之後大家就不能再訂或取消。</p>`, '關團')) return;
+      try { await api('POST', '/_open', { orderHashId: orderId, open: false }, { admin: true }); toast('已關團'); route(); }
+      catch (err) { toast(err.message); }
+      return;
+    }
+    const t = new Date(Date.now() + 8 * 3600e3 + 30 * 60e3); // default: 30 min from now, Taipei
+    const el = sheet(`<p class="big">重新開團：${esc(expanded.originator)}</p>
+      <div class="row"><label>自動截止 <input id="rd" type="date" value="${t.toISOString().slice(0, 10)}"> <input id="rt" type="time" value="${t.toISOString().slice(11, 16)}"></label></div>
+      <label class="row" style="margin-top:8px"><input type="checkbox" id="rnone"> 不自動截止（點完自己按「關團」）</label>
+      <div class="row" style="justify-content:flex-end;margin-top:16px"><button data-x>返回</button><button class="primary" data-go>重新開團</button></div>`);
+    el.querySelector('[data-x]').onclick = () => el.remove();
+    el.querySelector('[data-go]').onclick = async ev => {
+      const none = el.querySelector('#rnone').checked, d = el.querySelector('#rd').value, tm = el.querySelector('#rt').value;
+      if (!none && (!d || !tm)) return toast('請填截止時間');
+      ev.target.disabled = true;
+      try {
+        await api('POST', '/_open', { orderHashId: orderId, open: true, expireDate: none ? null : toExpireDate(d, tm) }, { admin: true });
+        el.remove(); toast('已重新開團，可以點餐了'); route();
+      } catch (err) { ev.target.disabled = false; toast(err.message); }
+    };
+  });
   $app.querySelector('#again').onclick = e => {
     const h = again()[e.target.closest('[data-again]')?.dataset.again]; if (!h) return;
     const c = cart.get(h.row.key) || { qty: 0, note: h.note };
@@ -336,11 +360,9 @@ async function renderHost() {
     return bindToken();
   }
 
-  const [shopData, orders, all] = await Promise.all([
+  const [shopData, orders] = await Promise.all([
     api('GET', '/shop/available-shops', undefined, { admin: true }), api('GET', '/order/progress').then(p => p.filter(o => o.inProgress)),
-    api('GET', '/order/manage-orders?first=0&size=20&sort=ID&asc=false'),
   ]);
-  const closed = all.items.filter(o => !o.inProgress).slice(0, 10);
   const shops = [...(shopData.noCategoryShops || []), ...(shopData.categories || []).flatMap(c => c.shops || [])].filter(s => !s.retired);
   const days = nextWeekDays();
   const tpl = store.get('dbd.tpl') || { shop: shops[0]?.shopHashId, time: '08:00', on: ['一', '二', '三', '四', '五'], suffix: '早餐' };
@@ -368,10 +390,7 @@ async function renderHost() {
     </div>
     <h2>進行中的訂單</h2>
     ${orders.map(o => `<div class="card row"><span class="grow"><b>${esc(o.originator)}</b> <span class="muted">${esc(o.shopName)} · 截止 ${esc(fmtTime(o.expireDate))} · ${o.size} 份 ${money(o.total)}</span></span>
-      <a href="https://www.dinbendon.net/do/order?id=${encodeURIComponent(o.orderHashId)}" target="_blank" rel="noopener">在 dinbendon 管理 ↗</a></div>`).join('') || '<p class="muted">沒有。</p>'}
-    <h2>已截止的訂單</h2>
-    ${closed.map(o => `<div class="card row"><span class="grow"><b>${esc(o.originator)}</b> <span class="muted">${esc(o.shopName)} · ${esc(fmtTime(o.lastExpireDate))}</span></span>
-      <button data-reopen="${esc(o.orderHashId)}" data-name="${esc(o.originator)}">重新開團</button></div>`).join('') || '<p class="muted">沒有。</p>'}`;
+      <a href="https://www.dinbendon.net/do/order?id=${encodeURIComponent(o.orderHashId)}" target="_blank" rel="noopener">在 dinbendon 管理 ↗</a></div>`).join('') || '<p class="muted">沒有。</p>'}`;
   bindToken();
 
   const $ = s => $app.querySelector(s);
@@ -381,24 +400,6 @@ async function renderHost() {
     catch (e) { out.textContent = e.message; }
   };
   $('#preview').onclick = () => settle('GET');
-  $app.addEventListener('click', e => {
-    const b = e.target.closest('[data-reopen]'); if (!b) return;
-    const t = new Date(Date.now() + 8 * 3600e3 + 3600e3); // default: an hour from now, Taipei
-    const el = sheet(`<p class="big">重新開團：${esc(b.dataset.name)}</p>
-      <div class="row"><label>新的截止時間 <input id="rd" type="date" value="${t.toISOString().slice(0, 10)}"> <input id="rt" type="time" value="${t.toISOString().slice(11, 16)}"></label></div>
-      <label class="row" style="margin-top:8px"><input type="checkbox" id="rnone"> 不自動截止</label>
-      <div class="row" style="justify-content:flex-end;margin-top:16px"><button data-x>返回</button><button class="primary" data-go>重新開團</button></div>`);
-    el.querySelector('[data-x]').onclick = () => el.remove();
-    el.querySelector('[data-go]').onclick = async ev => {
-      const none = el.querySelector('#rnone').checked, d = el.querySelector('#rd').value, tm = el.querySelector('#rt').value;
-      if (!none && (!d || !tm)) return toast('請填截止時間');
-      ev.target.disabled = true;
-      try {
-        await api('POST', '/_reopen', { orderHashId: b.dataset.reopen, expireDate: none ? null : toExpireDate(d, tm) }, { admin: true });
-        el.remove(); toast('已重新開團'); route();
-      } catch (err) { ev.target.disabled = false; toast(err.message); }
-    };
-  });
   $('#copysettle').onclick = async () => {
     try { const r = await api('GET', '/_settle', undefined, { admin: true }); await navigator.clipboard.writeText(r.text); toast('已複製'); }
     catch (e) { toast(e.message); }

@@ -77,8 +77,9 @@ async function upstreamPost(env, path, body, { headers, ownerKey } = {}) {
 
 // Reopen a closed order the same way the dinbendon manage page does: get a manage token,
 // set the new deadline first (else it would close again immediately), then flip in-progress.
-// dinbendon rejects unlock-manage (400) without an owner key.
-async function reopenOrder(env, orderHashId, expireDate, ownerKey) {
+// Open/close an order the way the dinbendon manage page does. Reopen sets the new deadline first
+// (else it would close again immediately). dinbendon rejects unlock-manage (400) without an owner key.
+async function setOrderOpen(env, orderHashId, open, expireDate, ownerKey) {
   let token = await upstreamPost(env, '/order/unlock-manage', { orderHashId, password: '' }, { ownerKey });
   let r = await upstreamPost(env, '/order/manage-payment/unlock', { token, orderHashId }, { ownerKey });
   if (r?.status === 'RELOAD_WITH_NEW_TOKEN') {
@@ -87,8 +88,8 @@ async function reopenOrder(env, orderHashId, expireDate, ownerKey) {
   }
   if (r?.status !== 'OK') throw new Error(`無法管理這張單（${r?.status ?? '未知'}）`);
   const opts = { ownerKey, headers: { 'X-DBD-Manage-Payment': token } };
-  await upstreamPost(env, '/order/manage-payment/update-expire-date', { expireDate }, opts);
-  if (!r.detail?.inProgress) await upstreamPost(env, '/order/manage-payment/toggle-in-progress', null, opts);
+  if (open) await upstreamPost(env, '/order/manage-payment/update-expire-date', { expireDate }, opts);
+  if (Boolean(r.detail?.inProgress) !== open) await upstreamPost(env, '/order/manage-payment/toggle-in-progress', null, opts);
 }
 
 async function sendDiscord(env, text) {
@@ -145,15 +146,15 @@ export default {
       } catch (e) { return json({ error: e.message }, 502); }
     }
 
-    // Admin: reopen a closed order with a new deadline ("YYYYMMDD hhmm" or null = no auto close).
-    if (path === '/_reopen' && request.method === 'POST') {
+    // Admin: reopen (open=true, new deadline "YYYYMMDD hhmm" or null = no auto close) or close an order.
+    if (path === '/_open' && request.method === 'POST') {
       if (!isAdmin) return json({ error: '需要管理碼' }, 403);
-      const { orderHashId, expireDate } = await request.json().catch(() => ({}));
+      const { orderHashId, open, expireDate } = await request.json().catch(() => ({}));
       if (!new RegExp(`^${ID}$`).test(orderHashId || '') || (expireDate != null && !/^\d{8} \d{4}$/.test(expireDate)))
         return json({ error: '參數錯誤' }, 400);
       const ownerKey = request.headers.get('X-Owner-Key') || '';
       if (!UUID.test(ownerKey)) return json({ error: '缺少瀏覽器識別碼，請重新整理' }, 400);
-      try { await reopenOrder(env, orderHashId, expireDate ?? null, ownerKey); return json({ data: { ok: true } }); }
+      try { await setOrderOpen(env, orderHashId, open !== false, expireDate ?? null, ownerKey); return json({ data: { ok: true } }); }
       catch (e) { return json({ error: e.message }, 502); }
     }
 
