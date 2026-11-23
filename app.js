@@ -282,6 +282,12 @@ async function renderHost() {
   const tpl = store.get('dbd.tpl') || { shop: shops[0]?.shopHashId, time: '08:00', on: ['一', '二', '三', '四', '五'], suffix: '早餐' };
 
   $app.innerHTML = tokenCard + `
+    <h2>每週結算</h2>
+    <div class="card">
+      <div class="muted">每週五 12:00 自動把本週每個人的金額發到 Discord。</div>
+      <div class="row" style="margin-top:10px"><button id="preview">預覽本週</button><button id="sendnow">現在發到 Discord</button></div>
+      <pre id="settle" hidden></pre>
+    </div>
     <h2>開下週的單</h2>
     <div class="card">
       <div class="row"><select id="shop" class="grow">${shops.map(s => `<option value="${esc(s.shopHashId)}" ${s.shopHashId === tpl.shop ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
@@ -302,6 +308,13 @@ async function renderHost() {
   bindToken();
 
   const $ = s => $app.querySelector(s);
+  const settle = async (method) => {
+    const out = $('#settle'); out.hidden = false; out.textContent = '計算中…';
+    try { const r = await api(method, '/_settle', undefined, { admin: true }); out.textContent = r.text; if (r.sent) toast('已發到 Discord'); }
+    catch (e) { out.textContent = e.message; }
+  };
+  $('#preview').onclick = () => settle('GET');
+  $('#sendnow').onclick = async () => { if (await ask('<p class="big">現在把本週結算發到 Discord？</p>', '發送')) settle('POST'); };
   const labels = () => {
     for (const cb of $app.querySelectorAll('[data-day]'))
       $app.querySelector(`[data-label="${cb.dataset.day}"]`).textContent = cb.checked ? `週${cb.dataset.wd}${$('#suffix').value}，${$('#time').value} 截止` : '';

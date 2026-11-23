@@ -1,7 +1,10 @@
 // Proxy between the GitHub Pages UI and dinbendon's internal JSON API, acting as the group account.
 // Holds the group account's JWT in KV (seeded by the admin; never a password), injects it upstream,
 // and saves refreshed tokens dinbendon returns in `x-dbd-new-token`.
+import { weekRange, summarize, formatSettlement, chunk } from './settle.js';
+
 const UPSTREAM = 'https://www.dinbendon.net/mvc/api';
+const SETTLE_CRON = '0 4 * * 5'; // Friday 12:00 Taipei
 const ID = '[A-Za-z0-9]{6,20}';
 // [method, path regex, role]. Anything else is rejected.
 const ROUTES = [
@@ -38,6 +41,43 @@ async function upstream(env, method, path, { body, ownerKey } = {}) {
   return res;
 }
 
+async function upstreamData(env, path) {
+  const res = await upstream(env, 'GET', path);
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || `dinbendon ${res.status} ${path}`);
+  return j.data;
+}
+
+// All orders whose expiry falls in this Taipei week, with their items.
+async function buildSettlement(env, now = Date.now()) {
+  const range = weekRange(now);
+  const picked = [];
+  for (let first = 0; first < 500; first += 50) {
+    const { items } = await upstreamData(env, `/order/manage-orders?first=${first}&size=50&sort=ID&asc=false`);
+    for (const o of items) if (o.lastExpireDate >= range.start && o.lastExpireDate < range.end) picked.push(o);
+    // Sorted newest first; anything created 2+ weeks before the week can't expire in it.
+    if (items.length < 50 || items.at(-1).createDate < range.start - 14 * 86400e3) break;
+  }
+  picked.sort((a, b) => a.lastExpireDate - b.lastExpireDate);
+  const orders = [];
+  for (const o of picked) {
+    const d = await upstreamData(env, `/order/${o.orderHashId}/expand-for-buyer`);
+    orders.push({ originator: o.originator, shopName: o.shopName, lastExpireDate: o.lastExpireDate, items: d.items });
+  }
+  return formatSettlement(range, orders, summarize(orders));
+}
+
+async function sendDiscord(env, text) {
+  if (!env.DISCORD_WEBHOOK) throw new Error('尚未設定 DISCORD_WEBHOOK');
+  for (const content of chunk(text)) {
+    const res = await fetch(env.DISCORD_WEBHOOK, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+    });
+    if (!res.ok) throw new Error(`Discord ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+}
+
 export default {
   async fetch(request, env) {
     const allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -71,6 +111,16 @@ export default {
       return json({ data: { exp: jwt ? jwtExp(jwt) : null } });
     }
 
+    // Admin: preview (GET) or send now (POST) this week's settlement.
+    if (path === '/_settle') {
+      if (!isAdmin) return json({ error: '需要管理碼' }, 403);
+      try {
+        const text = await buildSettlement(env);
+        if (request.method === 'POST') await sendDiscord(env, text);
+        return json({ data: { text, sent: request.method === 'POST' } });
+      } catch (e) { return json({ error: e.message }, 502); }
+    }
+
     const route = ROUTES.find(([m, re]) => m === request.method && re.test(path));
     if (!route) return json({ error: 'not found' }, 404);
     if (route[2] === 'admin' && !isAdmin) return json({ error: '需要管理碼' }, 403);
@@ -83,8 +133,9 @@ export default {
     return new Response(res.body, { status: res.status, headers: { ...cors, 'Content-Type': res.headers.get('Content-Type') || 'application/json' } });
   },
 
-  // Daily ping so dinbendon can hand back a refreshed token before the 30-day expiry.
   async scheduled(event, env) {
+    if (event.cron === SETTLE_CRON) return sendDiscord(env, await buildSettlement(env));
+    // Daily ping so dinbendon can hand back a refreshed token before the 30-day expiry.
     await upstream(env, 'POST', '/auth/auth-login');
   },
 };

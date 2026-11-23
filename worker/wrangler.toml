@@ -12,6 +12,7 @@ binding = "KV"
 id = "999caa65bb34441aaae483eaad74392f"
 
 [triggers]
-crons = ["0 1 * * *"]
+# daily token refresh (09:00 Taipei); weekly settlement to Discord (Fri 12:00 Taipei)
+crons = ["0 1 * * *", "0 4 * * 5"]
 
-# Secrets (not in this file): npx wrangler secret put ACCESS_CODE / ADMIN_CODE
+# Secrets (not in this file): ACCESS_CODE, ADMIN_CODE, DISCORD_WEBHOOK  (npx wrangler secret put NAME)
