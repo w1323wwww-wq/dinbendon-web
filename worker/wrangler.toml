@@ -1,0 +1,7 @@
+name = "dinbendon-proxy"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+# Comma-separated. Your GitHub Pages origin (no path), plus localhost for testing.
+ALLOWED_ORIGINS = "https://w1323wwww-wq.github.io,http://localhost:8000"
